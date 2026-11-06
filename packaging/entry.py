@@ -19,7 +19,7 @@ def self_test(output):
         root=tk.Tk();root.withdraw();app=App(root,store);root.update();app.close()
         with file_lock(Path(folder)/'test.lock'):pass
         assert store.load_tasks() is not None
-    with urlopen('https://api.github.com',timeout=30) as response:assert response.status==200
+    with urlopen('https://www.python.org',timeout=30) as response:assert response.status==200
     Path(output).write_text(json.dumps({'frozen':bool(getattr(sys,'frozen',False)),'platform':sys.platform,'tk':True,'state_and_lock':True,'https':True,'native_keychain_access':'user authorization not exercised'}),'utf-8')
 
 if __name__=='__main__':
