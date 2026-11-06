@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+data/
+build/
+dist/
+release/
+*.spec
+*.bin
+*.quark.*
+*.mp4
+*.mkv
+.env*
+session*
+queue.json
+tasks.json
