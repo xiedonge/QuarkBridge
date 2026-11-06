@@ -31,7 +31,7 @@ class CatalogTests(unittest.TestCase):
     def test_loose_renamed_file_hash_match_skips(self):
         loose=self.root/'old'/'custom-name.mp4';loose.parent.mkdir();loose.write_bytes(DATA)
         network=Network();result=self.dl(network=network).download(self.f,self.root)
-        self.assertEqual(result,loose);self.assertEqual(network.requests,[])
+        self.assertEqual(result,loose.resolve());self.assertEqual(network.requests,[])
     def test_same_name_and_size_different_content_waits_for_choice(self):
         loose=self.root/'old'/'video.mp4';loose.parent.mkdir();loose.write_bytes(b'x'*len(DATA))
         network=Network()

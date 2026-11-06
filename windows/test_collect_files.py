@@ -14,7 +14,7 @@ class CollectionTests(unittest.TestCase):
             q.add(api,[f],'https://pan.quark.cn/s/test','',root)
             q.run(threading.Event(),lambda p:api,lambda a,n:Downloader(a,opener=Network(),chunk_size=262144,emit=lambda s:None),lambda *a:None)
             job=q.snapshot()[0];path=Path(job['path'])
-            self.assertEqual(path.parent,root);self.assertEqual(path.suffix,'.mp4');self.assertIn('校验待确认',path.name);self.assertEqual(path.read_bytes(),DATA)
+            self.assertEqual(path.parent,root.resolve());self.assertEqual(path.suffix,'.mp4');self.assertIn('校验待确认',path.name);self.assertEqual(path.read_bytes(),DATA)
             network=Network();dl=Downloader(api,opener=network,emit=lambda s:None)
             self.assertEqual(dl.download(f,root),path);self.assertEqual(network.requests,[])
     def test_same_names_do_not_overwrite(self):
