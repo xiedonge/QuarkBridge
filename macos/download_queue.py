@@ -145,7 +145,6 @@ class DownloadQueue:
                     text=str(e) if isinstance(e,ProbeError) else f'操作失败（{type(e).__name__}），断点保留。'
                     if isinstance(e,PermissionError):text='本地目录写入被拒绝，请选择有写入权限的下载目录后重试。断点保留。'
                     elif isinstance(e,OSError) and getattr(e,'errno',None)==28:text='本地磁盘空间不足，请腾出空间或更换下载目录后重试。断点保留。'
-                    elif 'code=23018' in text:text='夸克拒绝了下载请求，接口未说明具体原因。请确认分享有效，持续失败时更新登录后重试。原始提示：'+text
                     with self.lock:
                         self.checkpoint_bytes(job,dl)
                         job.update(status='疑似重复，待选择' if isinstance(e,PotentialDuplicate) else ('校验待确认' if isinstance(e,ChecksumMismatch) else '失败，可重试'),error=text)

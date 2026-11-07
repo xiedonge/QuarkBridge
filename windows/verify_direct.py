@@ -16,6 +16,10 @@ BASE = 'https://drive-pc.quark.cn/1/clouddrive/'
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch'
 ALLOWED = {'member', 'share/sharepage/token', 'share/sharepage/detail', 'file/download'}
 class ProbeError(Exception): pass
+class APIError(ProbeError):
+    def __init__(self,path,code,status=None):
+        self.path,self.code,self.status=path,str(code),status
+        super().__init__(f'{path} HTTP {status}，接口 code={self.code}')
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         raise ProbeError('请求发生跳转，验证停止；未向跳转目标发送凭证。')
@@ -67,12 +71,12 @@ class Probe:
             except (ValueError,OSError): safe_code='unknown'
             if safe_code in ('40001','10000') or e.code==401:
                 raise ProbeError('登录已过期，请重新登录夸克并更新 Cookie；任务和断点已保留。') from None
-            raise ProbeError(f'{path} HTTP {e.code}，接口 code={safe_code}') from None
+            raise APIError(path,safe_code,e.code) from None
         except (OSError,ValueError): raise ProbeError(f'{path} 网络或响应格式错误') from None
         if d.get('code')!=0:
             if d.get('code') in (40001,10000):raise ProbeError('登录已过期，请重新登录夸克并更新 Cookie；任务和断点已保留。')
             # Do not print raw responses, tokens, URLs or arbitrary server text.
-            raise ProbeError(f"{path} 被服务器拒绝，code={d.get('code')}，status={d.get('status')}。")
+            raise APIError(path,d.get('code') if isinstance(d.get('code'),(int,float)) else 'unknown',d.get('status') if isinstance(d.get('status'),int) else None)
         return d.get('data')
 
     def capacity(self):
@@ -110,6 +114,28 @@ class Probe:
         return files
 
     def direct_link(self,f,refresh=False):
+        try:
+            return self._direct_link(f,refresh)
+        except APIError as error:
+            if error.path!='file/download' or error.code not in ('23018','50052'):
+                raise
+            self.emit('取链被拒绝，正在刷新分享凭据并重试一次…')
+            try:
+                return self._direct_link(f,True)
+            except APIError as retry:
+                if retry.path!='file/download':raise
+                account='未能确认账号状态'
+                try:
+                    member=self.call('member',fetch_subscribe='true',fetch_identity='true')
+                    if isinstance(member,dict) and 'total_capacity' in member:
+                        account='账号容量接口可用，但这不代表该分享允许下载'
+                except ProbeError as check:
+                    if '登录已过期' in str(check):account='账号接口明确提示登录已过期，请更新登录'
+                raise ProbeError(f'免转存取链失败，已刷新分享凭据并重试一次；{account}。'
+                                 f'file/download HTTP {retry.status}，接口 code={retry.code}。'
+                                 '未转存或删除云端文件；断点保留。可点“重试所选”；持续失败请先在官方客户端核对同一文件的下载权限。') from None
+
+    def _direct_link(self,f,refresh=False):
         if refresh:
             self.token=self.call('share/sharepage/token',{'pwd_id':self.sid,'passcode':self.password,'share_for_transfer':True})['stoken']
             for page in range(1,101):
@@ -117,7 +143,7 @@ class Probe:
                 rows=data.get('list',[])
                 match=next((x for x in rows if x['fid']==f['fid']),None)
                 if match:
-                    if match.get('size')!=f['size']:raise ProbeError('分享文件大小已改变，请重新解析。')
+                    if int(match.get('size',-1))!=int(f['size']):raise ProbeError('分享文件大小已改变，请重新解析。')
                     f['share_fid_token']=match['share_fid_token'];break
                 if len(rows)<100:raise ProbeError('分享文件已移除，请重新解析。')
             else:raise ProbeError('刷新文件令牌超过分页上限。')

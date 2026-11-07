@@ -42,6 +42,7 @@ jobs:
           name: verification-${{ matrix.label }}
           path: frozen-smoke.json
   publish:
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
