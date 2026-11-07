@@ -7,6 +7,7 @@ import time
 from urllib.parse import urlsplit,urlunsplit,parse_qsl,urlencode
 from direct_download import output_path,Paused,ChecksumMismatch,export_unverified
 from verify_direct import ProbeError
+from safe_diagnostics import failure_detail
 from download_catalog import PotentialDuplicate
 from pathlib import Path
 
@@ -140,7 +141,7 @@ class DownloadQueue:
                     with self.lock:job['status']='已暂停';self.checkpoint_bytes(job,dl);self.save()
                     break
                 except Exception as e:
-                    text=str(e) if isinstance(e,ProbeError) else f'操作失败（{type(e).__name__}），断点保留。'
+                    text=str(e) if isinstance(e,ProbeError) else failure_detail(e)
                     if isinstance(e,PermissionError):text='本地目录写入被拒绝，请选择有写入权限的下载目录后重试。断点保留。'
                     elif isinstance(e,OSError) and getattr(e,'errno',None)==28:text='本地磁盘空间不足，请腾出空间或更换下载目录后重试。断点保留。'
                     with self.lock:

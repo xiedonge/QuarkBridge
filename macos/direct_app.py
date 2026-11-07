@@ -36,7 +36,7 @@ def eta_text(remaining,speed,elapsed,phase,now=None):
 class App:
     def __init__(self,root,store=None):
         gc.collect()  # Reclaim retired Tk windows on their owner thread.
-        self.root=root;root.title('夸克下载 · QuarkBridge Mac 0.11.0');root.geometry('1080x780');root.minsize(940,680)
+        self.root=root;root.title('夸克下载 · QuarkBridge Mac 0.11.1-rc.2');root.geometry('1080x780');root.minsize(940,680)
         self.store=store or Store();self.rows=[];self.statuses={};self.queue_ids=[];self.auth_enabled=True
         self.q=queue.Queue();self.stop=threading.Event();self.busy=False;self.api=None;self.snapshot=None
         self.download_queue=None;self.queue_running=False;self.queue_autorun=False;self.queue_tree=None;self.queue_cookie=''
@@ -540,7 +540,7 @@ class App:
             elif typ=='incoming':data[0](*data[1])
             elif typ=='queue_changed':self.refresh_queue()
             elif typ=='queue_job':
-                if data['status']=='下载中':self.root.title('下载中 · '+data['file']['display'][:48]+' · QuarkBridge Mac 0.11.0')
+                if data['status']=='下载中':self.root.title('下载中 · '+data['file']['display'][:48]+' · QuarkBridge Mac 0.11.1-rc.2')
                 sid=self.api.sid if self.api else parse(self.link.get())[0]
                 if data['sid']==sid:
                     for i,f in enumerate(self.rows):
@@ -557,7 +557,7 @@ class App:
                 self.refresh_queue();self.save_history()
             elif typ=='log':self.log_message(data)
             elif typ=='error':self.latest_progress=None;self.status.set(data);self.error_detail.set(data);self.eta.set('任务未完成，断点已保留');self.log_message(data)
-            elif typ=='success':self.latest_progress=None;self.status.set(data);self.eta.set('操作完成');self.root.title('夸克下载 · QuarkBridge Mac 0.11.0');self.log_message(data)
+            elif typ=='success':self.latest_progress=None;self.status.set(data);self.eta.set('操作完成');self.root.title('夸克下载 · QuarkBridge Mac 0.11.1-rc.2');self.log_message(data)
             elif typ=='cookie':
                 self.cookie.set(data)
                 self.queue_cookie=data

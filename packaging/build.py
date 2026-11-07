@@ -1,7 +1,7 @@
 import os,sys,subprocess,shutil,json
 from pathlib import Path
 platform='macos' if sys.platform=='darwin' else 'windows'
-command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--windowed','--onedir','--name','QuarkBridge','--paths',platform,'--collect-all','certifi']
+command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--windowed','--onedir','--name','QuarkBridge','--paths',platform,'--collect-all','certifi','--collect-submodules','encodings']
 if platform=='macos':command+=['--collect-all','keyring','--hidden-import','keyring.backends.macOS','--osx-bundle-identifier','io.github.xiedonge.quarkbridge']
 subprocess.run(command+['packaging/entry.py'],check=True)
 executable=Path('dist/QuarkBridge.app/Contents/MacOS/QuarkBridge' if platform=='macos' else 'dist/QuarkBridge/QuarkBridge.exe').resolve()
