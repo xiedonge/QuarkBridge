@@ -57,3 +57,19 @@ class LoginTests(unittest.TestCase):
     def test_closing_ignores_late_login_result(self):
         a=self.app();a.closing=True;App.finish_login(a,'new','')
         self.assertEqual(a.cookie.get(),'old');self.assertEqual(a.saves,[])
+
+    def test_keychain_failure_does_not_block_history_restore(self):
+        from local_state import StateError
+        def denied():raise StateError('fixture permission denied')
+        a=SimpleNamespace(store=SimpleNamespace(load_session=denied,load_tasks=lambda:{'destination':'preserved','connections':8,'speed_profile_version':1,'files':[]}),
+                          login_status=Value(''),link=Value(''),destination=Value(''),connections=Value(''),status=Value(''),
+                          populate=lambda rows:None,log_message=lambda value:None)
+        App.restore(a)
+        self.assertEqual(a.destination.get(),'preserved')
+        self.assertEqual(a.connections.get(),'8')
+    def test_do_not_remember_never_saves_session(self):
+        a=self.app();a.remember=Value(False);a.password=Value('')
+        a.values=lambda:('https://pan.quark.cn/s/example','','new')
+        a.store=SimpleNamespace(save_session=lambda *args:self.fail('must not save plaintext or encrypted session'))
+        App.auth_values(a)
+        self.assertFalse(a.auth_enabled);self.assertEqual(a.queue_cookie,'new')

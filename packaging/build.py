@@ -1,7 +1,18 @@
 import os,sys,subprocess,shutil,json
 from pathlib import Path
-platform='macos' if sys.platform=='darwin' else 'windows'
-command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--windowed','--onedir','--name','QuarkBridge','--paths',platform,'--paths','shared','--collect-all','certifi','--collect-submodules','encodings']
+from importlib.metadata import distribution
+licenses=Path('build-licenses');licenses.mkdir(exist_ok=True)
+shutil.copy2('THIRD_PARTY.md',licenses/'THIRD_PARTY.md')
+for package in ('PySide6','PySide6_Essentials','PySide6_Addons','shiboken6'):
+    dist=distribution(package)
+    for item in dist.files or []:
+        if 'license' in str(item).lower() or 'copying' in item.name.lower():
+            source=Path(dist.locate_file(item))
+            if source.is_file():
+                target=licenses/package/str(item).replace('../','')
+                target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
+platform='macos'  if sys.platform=='darwin' else 'windows'
+command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--windowed','--onedir','--name','QuarkBridge','--add-data',str(licenses)+':licenses','--paths',platform,'--paths','shared','--collect-all','certifi','--collect-submodules','encodings']
 if platform=='macos':command+=['--collect-all','keyring','--hidden-import','keyring.backends.macOS','--osx-bundle-identifier','io.github.xiedonge.quarkbridge']
 subprocess.run(command+['packaging/entry.py'],check=True)
 executable=Path('dist/QuarkBridge.app/Contents/MacOS/QuarkBridge' if platform=='macos' else 'dist/QuarkBridge/QuarkBridge.exe').resolve()

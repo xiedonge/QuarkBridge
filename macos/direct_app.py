@@ -184,6 +184,8 @@ class App:
             session=self.store.load_session()
             self.cookie.set(session.get('cookie',''));self.password.set(session.get('password',''))
             if session.get('cookie'):self.login_status.set('已恢复加密保存的登录信息；接口返回新 Cookie 时自动更新')
+        except StateError as e:self.login_status.set(str(e))
+        try:
             saved=self.store.load_tasks()
             if not saved:return
             self.link.set(saved.get('link',DEFAULT_LINK));self.destination.set(saved.get('destination',str(Path.home()/'Downloads'/'QuarkDownloads')))
@@ -230,6 +232,7 @@ class App:
             try:self.store.save_session(values[2],password);self.login_status.set('登录信息已加密保存；服务端续期时自动更新')
             except (StateError,OSError) as e:
                 self.auth_enabled=False;self.login_status.set('加密保存失败，本次仅在内存使用 Cookie')
+        else:self.login_status.set('登录信息仅本次使用，退出后不保存。')
         return values
     def cookie_callback(self,password):
         def updated(cookie):

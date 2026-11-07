@@ -49,6 +49,7 @@ def run(smoke=False):
     profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies)
     profile.downloadRequested.connect(lambda download:download.cancel())
     view=QWebEngineView(window);page=Page(profile,view);view.setPage(page);layout.addWidget(view)
+    page.newWindowRequested.connect(lambda request:request.openIn(page))
     view.urlChanged.connect(lambda url:address.setText('当前网站：'+url.scheme()+'://'+url.host()))
     button=QPushButton('我已登录，重新检查');layout.addWidget(button)
     state={'busy':False,'last':0,'rendered':False,'finished':False}
