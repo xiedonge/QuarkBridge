@@ -2,6 +2,8 @@ import sys,unittest
 from pathlib import Path
 platform='macos' if sys.platform=='darwin' else 'windows'
 sys.path.insert(0,str(Path(platform).resolve()))
+sys.path.insert(0,str(Path('shared').resolve()))
+
 def flatten(suite):
     for item in suite:
         if isinstance(item,unittest.TestSuite):yield from flatten(item)

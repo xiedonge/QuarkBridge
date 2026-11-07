@@ -1,5 +1,6 @@
 """Windows UI for direct share downloads. Credentials stay in memory."""
 import json
+import sys
 import gc
 import os
 import queue
@@ -15,6 +16,8 @@ from tkinter import font as tkfont
 from verify_direct import Probe,ProbeError,parse
 from direct_download import Downloader,Paused,ChecksumMismatch,file_lock,export_unverified
 from local_state import Store,StateError
+if not getattr(sys,'frozen',False):sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'shared'))
+from login_bridge import capture_login,LoginError
 from download_queue import DownloadQueue
 from task_view import FILTERS,ATTENTION,share_input,size_text,category,visible,progress_text,next_step
 
@@ -35,17 +38,18 @@ def eta_text(remaining,speed,elapsed,phase,now=None):
 class App:
     def __init__(self,root,store=None):
         gc.collect()  # Reclaim retired Tk windows on their owner thread.
-        self.root=root;root.title('夸克下载 · QuarkBridge 0.11.1-rc.2');root.geometry('1080x780');root.minsize(940,680)
+        self.root=root;root.title('夸克下载 · QuarkBridge 0.12.0-rc.1');root.geometry('1080x780');root.minsize(940,680)
         self.store=store or Store();self.rows=[];self.statuses={};self.queue_ids=[];self.auth_enabled=True
         self.q=queue.Queue();self.stop=threading.Event();self.busy=False;self.api=None;self.snapshot=None
         self.download_queue=None;self.queue_running=False;self.queue_autorun=False;self.queue_tree=None;self.queue_cookie=''
+        self.login_cancel=threading.Event();self.login_active=False
         self.closing=False;self.closed=False;self.dialogs=set();self.dialog_threads=[]
         self.queue_summary=tk.StringVar(value='还没有下载任务')
         self.error_detail=tk.StringVar();self.task_detail=tk.StringVar(value='点击“添加文件”开始。下载中也能随时添加下一份文件。')
         self.filter=tk.StringVar(value='全部');self.search=tk.StringVar();self.empty_hint=tk.StringVar()
         self.last_path=None;self.latest_progress=None;self.last_update=0;self.last_bytes=0;self.last_clock=time.monotonic()
         self.speed_samples=deque();self.speed_reset=True;self.previous_phase='';self.connections=tk.StringVar(value='32')
-        self.remember=tk.BooleanVar(value=True);self.eta=tk.StringVar(value='预计完成：开始下载后显示');self.login_status=tk.StringVar(value='先到“设置”填写登录信息，仅在本机保存')
+        self.remember=tk.BooleanVar(value=True);self.eta=tk.StringVar(value='预计完成：开始下载后显示');self.login_status=tk.StringVar(value='到“设置”点击“登录夸克”，自动连接账号')
         self.link=tk.StringVar(value=DEFAULT_LINK);self.password=tk.StringVar();self.cookie=tk.StringVar()
         self.destination=tk.StringVar(value=str(Path.home()/'Downloads'/'QuarkDownloads'));self.status=tk.StringVar(value='添加文件 → 自动排队 → 下载到本地')
         tkfont.nametofont('TkDefaultFont').configure(family='Microsoft YaHei UI',size=10)
@@ -126,14 +130,38 @@ class App:
         self.remember_box.grid(row=3,column=1,sticky='w',pady=6)
         self.forget_button=ttk.Button(panel,text='忘记登录',command=self.forget);self.forget_button.grid(row=3,column=2,padx=6)
         ttk.Label(panel,textvariable=self.login_status,wraplength=620).grid(row=4,column=0,columnspan=2,sticky='w',pady=8)
-        ttk.Button(panel,text='如何获取 Cookie',command=lambda:messagebox.showinfo('本机登录信息',
-            '在浏览器登录 pan.quark.cn，按 F12 打开开发者工具，选择“网络 / Network”后刷新网页。\n\n选择网盘的 list 或 sort 请求，在请求标头中复制完整 Cookie，粘贴到这里。\n\n只保存在本机；不要发送到聊天或其他网站。登录失效时需手动更新。',parent=self.root)).grid(row=4,column=2,padx=6)
+        self.login_button=ttk.Button(panel,text='登录夸克 / 更换账号',command=self.login_quark)
+        self.login_button.grid(row=4,column=2,padx=6)
         ttk.Separator(panel).grid(row=5,column=0,columnspan=3,sticky='ew',pady=12)
         ttk.Label(panel,text='每个文件的连接数').grid(row=6,column=0,sticky='w')
         self.connection_box=ttk.Combobox(panel,textvariable=self.connections,values=('1','2','4','8','16','32'),width=6,state='readonly');self.connection_box.grid(row=6,column=1,sticky='w')
         ttk.Label(panel,text='已按本机测速采用 32 连接、2 MiB 分段和连接复用。速度有波动；遇到限流可调低连接数。',wraplength=760).grid(row=7,column=0,columnspan=3,sticky='w',pady=10)
         ttk.Label(panel,text='变更连接数后，下一次开始 / 重试会应用到等待任务。默认目录仅用于新任务；旧任务保持原位置续传。',wraplength=760).grid(row=8,column=0,columnspan=3,sticky='w',pady=6)
         self.save_settings_button=ttk.Button(panel,text='保存设置，返回下载',command=self.save_settings);self.save_settings_button.grid(row=9,column=0,columnspan=3,sticky='w',pady=12)
+
+    def login_quark(self):
+        if self.busy or self.closing or self.login_active:return
+        self.login_active=True;self.login_cancel.clear();self.set_busy(True)
+        self.login_status.set('请在弹出的官方登录窗口完成登录；关闭窗口可取消，原配置保留。')
+        def work():
+            cookie='';error=''
+            try:cookie=capture_login(self.login_cancel.is_set)
+            except LoginError as e:error=str(e)
+            except Exception:error='登录窗口未完成，请重新打开；原登录保留。'
+            self.q.put(('login_result',(cookie,error)))
+        worker=threading.Thread(target=work,daemon=True);self.dialog_threads.append(worker);worker.start()
+
+    def finish_login(self,cookie,error):
+        self.login_active=False;self.set_busy(False)
+        if self.closing or self.login_cancel.is_set():return
+        if not cookie:
+            self.login_status.set(error or '已取消登录，原登录和任务保留。');return
+        self.cookie.set(cookie);self.queue_cookie=cookie;self.api=None;self.snapshot=None
+        if self.download_queue:
+            with self.download_queue.lock:self.download_queue.live.clear()
+        self.auth_values()
+        self.status.set('登录已更新；原任务和断点保留。点击“开始 / 继续”或“重试失败任务”。')
+        self.error_detail.set('')
 
     def save_settings(self):
         if self.busy:return
@@ -222,7 +250,7 @@ class App:
         self.enqueue_button.configure(state='normal' if self.api and self.download_queue else 'disabled')
         self.pause_button.configure(state='normal' if value else 'disabled')
         self.connection_box.configure(state='disabled' if value else 'readonly')
-        for widget in [self.remember_box,self.forget_button]:widget.configure(state='disabled' if value else 'normal')
+        for widget in [self.remember_box,self.forget_button,self.login_button]:widget.configure(state='disabled' if value else 'normal')
         self.save_settings_button.configure(state='disabled' if value else 'normal')
         pending=self.download_queue.has_pending() if self.download_queue else False
         legacy=bool(self.rows) and not (self.download_queue and self.download_queue.snapshot())
@@ -523,6 +551,7 @@ class App:
             self.q.put(('success','范围验证通过；点击“下载所选文件 / 继续下载”保存完整文件。'))
         self.start(action)
     def pause(self):
+        if self.login_active:self.login_cancel.set();return
         self.queue_autorun=False
         self.stop.set();self.eta.set('已请求暂停，预计完成时间暂不计算');self.status.set('正在暂停，等待当前网络读取结束（一般不超过 30 秒）…')
     def open_folder(self):
@@ -535,10 +564,11 @@ class App:
             if typ=='idle':
                 self.set_busy(False);self.save_history()
                 if self.queue_autorun and self.download_queue and self.download_queue.has_pending():self.start_queue()
+            elif typ=='login_result':self.finish_login(*data)
             elif typ=='incoming':data[0](*data[1])
             elif typ=='queue_changed':self.refresh_queue()
             elif typ=='queue_job':
-                if data['status']=='下载中':self.root.title('下载中 · '+data['file']['display'][:48]+' · QuarkBridge 0.11.1-rc.2')
+                if data['status']=='下载中':self.root.title('下载中 · '+data['file']['display'][:48]+' · QuarkBridge 0.12.0-rc.1')
                 sid=self.api.sid if self.api else parse(self.link.get())[0]
                 if data['sid']==sid:
                     for i,f in enumerate(self.rows):
@@ -555,7 +585,7 @@ class App:
                 self.refresh_queue();self.save_history()
             elif typ=='log':self.log_message(data)
             elif typ=='error':self.latest_progress=None;self.status.set(data);self.error_detail.set(data);self.eta.set('任务未完成，断点已保留');self.log_message(data)
-            elif typ=='success':self.latest_progress=None;self.status.set(data);self.eta.set('操作完成');self.root.title('夸克下载 · QuarkBridge 0.11.1-rc.2');self.log_message(data)
+            elif typ=='success':self.latest_progress=None;self.status.set(data);self.eta.set('操作完成');self.root.title('夸克下载 · QuarkBridge 0.12.0-rc.1');self.log_message(data)
             elif typ=='cookie':
                 self.cookie.set(data)
                 self.queue_cookie=data
@@ -596,7 +626,7 @@ class App:
         self.timer=self.root.after(100,self.pump)
     def close(self):
         if self.closed:return
-        self.closing=True;self.queue_autorun=False
+        self.closing=True;self.queue_autorun=False;self.login_cancel.set()
         if self.busy or any(t.is_alive() for t in self.dialog_threads):
             if self.busy:self.pause()
             self.add_share_button.configure(state='disabled')
