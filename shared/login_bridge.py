@@ -126,5 +126,20 @@ class CookieCollector:
         return '; '.join(f'{key[2]}={value}' for key,value in rows)
 
     def ready(self):
-        names = {key[2] for key in self.cookies}
+        names = {key[2] for key,value in self.cookies.items() if value}
         return {'__pus','__puus'}.issubset(names)
+
+
+def validate_login(cookie, probe_factory=None):
+    if probe_factory is None:
+        from verify_direct import Probe
+        probe_factory = Probe
+    probe = probe_factory(cookie,emit=lambda message:None)
+    member = probe.call('member',fetch_subscribe='true',fetch_identity='true')
+    if not isinstance(member,dict):raise LoginError('账号校验未通过。')
+    try:
+        valid = int(member['total_capacity']) > 0 and int(member['use_capacity']) >= 0
+    except (KeyError,ValueError,TypeError):
+        valid = False
+    if not valid:raise LoginError('账号校验未通过。')
+    return probe.cookie

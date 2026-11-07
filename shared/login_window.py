@@ -9,7 +9,7 @@ from pathlib import Path
 
 if not getattr(sys,'frozen',False):
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/('macos' if sys.platform=='darwin' else 'windows')))
-from login_bridge import CookieCollector, send_packet, receive_packet
+from login_bridge import CookieCollector, send_packet, receive_packet, validate_login
 
 
 def run(smoke=False):
@@ -83,10 +83,7 @@ def run(smoke=False):
         def validate():
             result=''
             try:
-                from verify_direct import Probe
-                p=Probe(candidate,emit=lambda message:None)
-                member=p.call('member',fetch_subscribe='true',fetch_identity='true')
-                if isinstance(member,dict) and 'total_capacity' in member and 'use_capacity' in member:result=p.cookie
+                result=validate_login(candidate)
             except Exception:pass
             events.validated.emit(candidate,result)
         threading.Thread(target=validate,daemon=True).start()

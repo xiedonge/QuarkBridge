@@ -73,3 +73,18 @@ class LoginTests(unittest.TestCase):
         a.store=SimpleNamespace(save_session=lambda *args:self.fail('must not save plaintext or encrypted session'))
         App.auth_values(a)
         self.assertFalse(a.auth_enabled);self.assertEqual(a.queue_cookie,'new')
+
+    def test_login_validation_returns_rotated_cookie_only_for_valid_member(self):
+        from login_bridge import validate_login
+        calls=[]
+        def factory(cookie,emit):
+            def call(path,**query):calls.append(path);return {'total_capacity':10,'use_capacity':20}
+            return SimpleNamespace(cookie='rotated',call=call)
+        self.assertEqual(validate_login('candidate',factory),'rotated')
+        self.assertEqual(calls,['member'])
+        for value in (None,{}, {'total_capacity':0,'use_capacity':0},{'total_capacity':None,'use_capacity':1}):
+            with self.assertRaises(LoginError):
+                validate_login('candidate',lambda *args,**kwargs:SimpleNamespace(cookie='candidate',call=lambda *args,**kwargs:value))
+    def test_empty_session_cookie_does_not_trigger_capture(self):
+        c=CookieCollector();c.update('__pus','','.quark.cn');c.update('__puus','x','.quark.cn')
+        self.assertFalse(c.ready())
