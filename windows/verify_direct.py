@@ -16,6 +16,7 @@ BASE = 'https://drive-pc.quark.cn/1/clouddrive/'
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch'
 ALLOWED = {'member', 'share/sharepage/token', 'share/sharepage/detail', 'file/download'}
 class ProbeError(Exception): pass
+class LoginExpired(ProbeError): pass
 class APIError(ProbeError):
     def __init__(self,path,code,status=None):
         self.path,self.code,self.status=path,str(code),status
@@ -69,26 +70,29 @@ class Probe:
                 code=rejected.get('code')
                 safe_code=str(code) if isinstance(code,(int,float)) else 'unknown'
             except (ValueError,OSError): safe_code='unknown'
-            if safe_code in ('40001','10000') or e.code==401:
-                raise ProbeError('登录已过期，请重新登录夸克并更新 Cookie；任务和断点已保留。') from None
+            if safe_code in ('40001','10000') or (e.code==401 and path in ('member','file/download')):
+                raise LoginExpired('登录已过期，请重新登录夸克并更新 Cookie；任务和断点已保留。') from None
             raise APIError(path,safe_code,e.code) from None
         except (OSError,ValueError): raise ProbeError(f'{path} 网络或响应格式错误') from None
         if d.get('code')!=0:
-            if d.get('code') in (40001,10000):raise ProbeError('登录已过期，请重新登录夸克并更新 Cookie；任务和断点已保留。')
+            if d.get('code') in (40001,10000):raise LoginExpired('登录已过期，请重新登录夸克并更新 Cookie；任务和断点已保留。')
             # Do not print raw responses, tokens, URLs or arbitrary server text.
             raise APIError(path,d.get('code') if isinstance(d.get('code'),(int,float)) else 'unknown',d.get('status') if isinstance(d.get('status'),int) else None)
         return d.get('data')
 
-    def capacity(self):
+    def capacity(self,check_login=False):
         try:
             d=self.call('member',fetch_subscribe='true',fetch_identity='true')
             return {'total':int(d['total_capacity']),'used':int(d['use_capacity'])}
+        except LoginExpired:
+            if check_login:raise
+            return None
         except (ProbeError,KeyError,TypeError,ValueError): return None
 
     def scan(self,link,password=''):
         self.sid,parent,auto=parse(link)
         self.password=password or auto
-        self.before=self.capacity()
+        self.before=self.capacity(check_login=bool(self.cookie))
         self.token=self.call('share/sharepage/token',{'pwd_id':self.sid,'passcode':password or auto,'share_for_transfer':True})['stoken']
         files=[]; seen=set()
         def walk(fid,prefix='',depth=0):
@@ -130,7 +134,7 @@ class Probe:
                     if isinstance(member,dict) and 'total_capacity' in member:
                         account='账号容量接口可用，但这不代表该分享允许下载'
                 except ProbeError as check:
-                    if '登录已过期' in str(check):account='账号接口明确提示登录已过期，请更新登录'
+                    if isinstance(check,LoginExpired):raise check from None
                 raise ProbeError(f'免转存取链失败，已刷新分享凭据并重试一次；{account}。'
                                  f'file/download HTTP {retry.status}，接口 code={retry.code}。'
                                  '未转存或删除云端文件；断点保留。可点“重试所选”；持续失败请先在官方客户端核对同一文件的下载权限。') from None

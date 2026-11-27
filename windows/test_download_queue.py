@@ -123,13 +123,18 @@ class QueueTests(unittest.TestCase):
             while not predicate() and time.monotonic()<deadline:root.update();time.sleep(.01)
             self.assertTrue(predicate())
         try:
-            with patch('direct_app.Probe',Fresh),patch('direct_app.Downloader',side_effect=factory):
+            with patch('share_dialog.Probe',Fresh),patch('direct_app.Downloader',side_effect=factory):
                 app.download_button.invoke();pump_until(entered.is_set)
                 window=app.add_share_dialog();all_widgets=list(widgets(window))
-                entries=[w for w in all_widgets if w.winfo_class()=='TEntry'];entries[0].insert(0,'https://pan.quark.cn/s/second')
+                next(w for w in all_widgets if w.winfo_class()=='Text').insert('1.0','https://pan.quark.cn/s/second')
                 scan=next(w for w in all_widgets if w.winfo_class()=='TButton' and w.cget('text')=='解析分享')
-                add=next(w for w in all_widgets if w.winfo_class()=='TButton' and w.cget('text')=='所选文件加入队列')
-                scan.invoke();pump_until(lambda:str(add.cget('state'))=='normal');add.invoke()
+                add=next(w for w in all_widgets if w.winfo_class()=='TButton' and w.cget('text')=='立即下载')
+                scan.invoke()
+                tree=next(w for w in all_widgets if w.winfo_class()=='Treeview')
+                pump_until(lambda:bool(tree.get_children()))
+                self.assertEqual(str(add.cget('state')),'disabled')
+                next(w for w in all_widgets if w.winfo_class()=='TButton' and w.cget('text')=='全选筛选结果').invoke()
+                add.invoke()
                 self.assertEqual(len(app.download_queue.snapshot()),2);self.assertTrue(app.busy)
                 release.set();pump_until(lambda:not app.busy)
                 jobs=app.download_queue.snapshot();self.assertEqual([j['status'] for j in jobs],['已完成','已存在，已跳过'])
@@ -156,9 +161,11 @@ class QueueTests(unittest.TestCase):
         try:
             with patch('direct_app.Downloader',side_effect=factory):
                 app.download_button.invoke();finished()
-                self.assertIn('网络连接中断',app.error_detail.get());self.assertIn('网络连接中断',app.tree.set('0','reason'))
+                self.assertIn('需要处理',app.error_detail.get());self.assertIn('网络连接中断',app.tree.set('0','reason'))
                 self.assertEqual(str(app.add_share_button.cget('state')),'normal')
                 self.assertFalse(app.verify_button.winfo_manager());self.assertFalse(app.repair_button.winfo_manager())
+                app.queue_tree.selection_set(app.download_queue.snapshot()[0]['id']);app.task_info()
+                self.assertIn('网络连接中断',app.diagnostic_text.get())
                 app.retry_button.invoke();finished()
             self.assertEqual(app.tree.set('0','state'),'已完成');self.assertEqual(app.error_detail.get(),'')
             self.assertEqual(len(calls),2);self.assertEqual(Path(app.last_path).read_bytes(),DATA)

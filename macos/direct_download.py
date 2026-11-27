@@ -205,7 +205,7 @@ class Downloader:
                     if state.get('md5') and state['md5'].lower()!=initial_md5.lower():raise ProbeError('源文件摘要已改变，断点保留，请确认分享文件。')
                     state['md5']=initial_md5
                 self.prefetched_link=None
-            self.progress(offset,size,'下载中')
+            self.progress(offset,size,'获取下载地址')
             if self.workers>1 and offset<size:
                 self.emit(f'使用 {self.workers} 个连接并行下载；现有断点继续使用。')
                 self._parallel(f,out,state,statepath,offset,size)
@@ -375,7 +375,7 @@ class Downloader:
                     with guard:openers.append(local.opener)
             generation=None
             for attempt in range(4):
-                check();report(start,0)
+                check()
                 url,headers,generation=get_link(generation if attempt else None)
                 try:
                     request=Request(url,headers=dict(headers,Range=f'bytes={start}-{end}'))

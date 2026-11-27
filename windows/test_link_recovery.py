@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import Mock
-from verify_direct import Probe, APIError, ProbeError
+from verify_direct import Probe, APIError, ProbeError, LoginExpired
 
 class RecoveryTests(unittest.TestCase):
     def make(self):
@@ -32,8 +32,8 @@ class RecoveryTests(unittest.TestCase):
         self.assertNotIn('old-file-token',str(caught.exception))
     def test_explicit_login_failure_distinguished(self):
         p,f=self.make();p._direct_link=Mock(side_effect=APIError('file/download',23018,400))
-        p.call=Mock(side_effect=ProbeError('登录已过期'))
-        with self.assertRaisesRegex(ProbeError,'账号接口明确提示登录已过期'):p.direct_link(f)
+        p.call=Mock(side_effect=LoginExpired('登录已过期'))
+        with self.assertRaisesRegex(ProbeError,'登录已过期'):p.direct_link(f)
     def test_other_failures_are_not_retried(self):
         p,f=self.make();p._direct_link=Mock(side_effect=APIError('file/download',999,400))
         with self.assertRaises(APIError):p.direct_link(f)

@@ -13,13 +13,14 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk,filedialog,messagebox
 from tkinter import font as tkfont
-from verify_direct import Probe,ProbeError,parse
+from verify_direct import Probe,ProbeError,LoginExpired,parse
 from direct_download import Downloader,Paused,ChecksumMismatch,file_lock,export_unverified
 from local_state import Store,StateError
 if not getattr(sys,'frozen',False):sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'shared'))
 from login_bridge import capture_login,LoginError
 from download_queue import DownloadQueue
-from task_view import FILTERS,ATTENTION,share_input,size_text,category,visible,progress_text,next_step
+from task_view import FILTERS,ATTENTION,share_input,size_text,category,visible,progress_text,next_step,task_status_text
+from share_dialog import open_share_dialog
 
 DEFAULT_LINK='https://pan.quark.cn/s/example'
 
@@ -42,7 +43,7 @@ class App:
         self.store=store or Store();self.rows=[];self.statuses={};self.queue_ids=[];self.auth_enabled=True
         self.q=queue.Queue();self.stop=threading.Event();self.busy=False;self.api=None;self.snapshot=None
         self.download_queue=None;self.queue_running=False;self.queue_autorun=False;self.queue_tree=None;self.queue_cookie=''
-        self.login_cancel=threading.Event();self.login_active=False
+        self.login_cancel=threading.Event();self.login_active=False;self.login_expired=False
         self.closing=False;self.closed=False;self.dialogs=set();self.dialog_threads=[]
         self.queue_summary=tk.StringVar(value='还没有下载任务')
         self.error_detail=tk.StringVar();self.task_detail=tk.StringVar(value='点击“添加文件”开始。下载中也能随时添加下一份文件。')
@@ -69,7 +70,7 @@ class App:
         self.add_share_button=ttk.Button(bar,text='＋ 添加文件',command=self.add_share_dialog);self.add_share_button.pack(side='left')
         self.resume_button=ttk.Button(bar,text='开始 / 继续',command=self.resume);self.resume_button.pack(side='left',padx=6)
         self.pause_button=ttk.Button(bar,text='暂停队列',command=self.pause,state='disabled');self.pause_button.pack(side='left')
-        self.retry_button=ttk.Button(bar,text='重试失败任务',command=self.retry_failed);self.retry_button.pack(side='left',padx=6)
+        self.retry_button=ttk.Button(bar,text='重试所选',command=lambda:self.queue_edit('retry'));self.retry_button.pack(side='left',padx=6)
         self.folder_button=ttk.Button(bar,text='打开下载目录',command=self.open_folder);self.folder_button.pack(side='right')
         filters=ttk.Frame(self.task_page);filters.grid(row=1,column=0,sticky='ew',pady=(0,8))
         for name in FILTERS:ttk.Radiobutton(filters,text=name,value=name,variable=self.filter,command=self.refresh_queue).pack(side='left',padx=(0,8))
@@ -84,10 +85,16 @@ class App:
         self.queue_tree.pack(side='left',fill='both',expand=True)
         scroll=ttk.Scrollbar(frame,command=self.queue_tree.yview);scroll.pack(side='right',fill='y');self.queue_tree.configure(yscrollcommand=scroll.set)
         ttk.Label(self.task_page,textvariable=self.empty_hint).grid(row=4,column=0,sticky='w',pady=4)
+        ttk.Label(heading,textvariable=self.login_status,wraplength=460).pack(side='right',padx=8)
+        self.queue_login=ttk.Button(bar,text='重新登录',command=self.login_quark)
         self.queue_tree.bind('<<TreeviewSelect>>',self.task_info)
         self.queue_tree.bind('<Double-1>',lambda e:self.open_task_folder())
         detail=ttk.LabelFrame(self.task_page,text='选中任务',padding=8);detail.grid(row=5,column=0,sticky='ew',pady=(2,8))
         ttk.Label(detail,textvariable=self.task_detail,wraplength=860).pack(anchor='w')
+        self.diagnostic_open=False
+        self.diagnostic_text=tk.StringVar()
+        self.diagnostic_button=ttk.Checkbutton(detail,text='技术详情',command=self.toggle_diagnostic)
+        self.diagnostic_label=ttk.Label(detail,textvariable=self.diagnostic_text,wraplength=860)
         self.task_actions=ttk.Frame(detail);self.task_actions.pack(fill='x',pady=(8,0));self.context_buttons={}
         for label,command in [('重试所选',lambda:self.queue_edit('retry')),('打开所在文件夹',self.open_task_folder),('上移',lambda:self.queue_edit('up')),('下移',lambda:self.queue_edit('down')),('移除任务',lambda:self.queue_edit('remove')),
                               ('保存现有文件',self.queue_export),('使用已有文件',lambda:self.resolve_duplicates(True)),('仍然下载',lambda:self.resolve_duplicates(False))]:
@@ -114,6 +121,9 @@ class App:
         self.restore();self.queue_cookie=self.cookie.get();self.session_password=self.password.get()
         try:self.download_queue=DownloadQueue(self.store,lambda:self.q.put(('queue_changed',None)))
         except StateError as e:self.error_detail.set(str(e));self.log_message(str(e))
+        if self.download_queue and any(j['status']=='等待登录' for j in self.download_queue.snapshot()):
+            self.login_expired=True
+            self.login_status.set('上次下载需要重新登录夸克。')
         if self.download_queue and self.download_queue.snapshot():self.status.set('已恢复下载任务；点击“开始 / 继续”接续。')
         self.search.trace_add('write',lambda *_:self.refresh_queue())
         self.refresh_queue();self.set_busy(False);root.protocol('WM_DELETE_WINDOW',self.close);self.timer=root.after(100,self.pump)
@@ -139,8 +149,11 @@ class App:
         ttk.Label(panel,text='变更连接数后，下一次开始 / 重试会应用到等待任务。默认目录仅用于新任务；旧任务保持原位置续传。',wraplength=760).grid(row=8,column=0,columnspan=3,sticky='w',pady=6)
         self.save_settings_button=ttk.Button(panel,text='保存设置，返回下载',command=self.save_settings);self.save_settings_button.grid(row=9,column=0,columnspan=3,sticky='w',pady=12)
 
-    def login_quark(self):
-        if self.busy or self.closing or self.login_active:return
+    def login_quark(self,on_result=None):
+        if self.busy or self.closing or self.login_active or any(t.is_alive() for t in self.dialog_threads):
+            if on_result:on_result(False,'请先暂停当前操作，再重新登录。')
+            return
+        self.login_return=on_result
         self.login_active=True;self.login_cancel.clear();self.set_busy(True)
         self.login_status.set('请在弹出的官方登录窗口完成登录；关闭窗口可取消，原配置保留。')
         def work():
@@ -153,15 +166,28 @@ class App:
 
     def finish_login(self,cookie,error):
         self.login_active=False;self.set_busy(False)
-        if self.closing or self.login_cancel.is_set():return
-        if not cookie:
-            self.login_status.set(error or '已取消登录，原登录和任务保留。');return
+        callback=getattr(self,'login_return',None)
+        self.login_return=None
+        if self.closing:return
+        if not cookie or self.login_cancel.is_set():
+            notice=error or '已取消登录，原登录和任务保留。'
+            self.login_status.set(notice)
+            if callback:callback(False,notice)
+            return
+        self.login_expired=False
         self.cookie.set(cookie);self.queue_cookie=cookie;self.api=None;self.snapshot=None
         if self.download_queue:
             with self.download_queue.lock:self.download_queue.live.clear()
         self.auth_values()
-        self.status.set('登录已更新；原任务和断点保留。点击“开始 / 继续”或“重试失败任务”。')
+        self.status.set('登录已更新；原任务和断点保留。点击“开始 / 继续”或“重试所选”。')
         self.error_detail.set('')
+        if hasattr(self,'queue_tree'):
+            try:
+                if self.download_queue:self.download_queue.mark_login_ready()
+            except (OSError,StateError):
+                self.error_detail.set('登录已更新，任务状态暂未保存。断点仍可继续使用。')
+            self.refresh_queue()
+        if callback:callback(True,'登录成功，可以继续解析。')
 
     def save_settings(self):
         if self.busy:return
@@ -172,10 +198,7 @@ class App:
         if self.log.winfo_manager():self.log.pack_forget()
         else:self.log.pack(fill='x')
     def retry_failed(self):
-        if not self.download_queue:return
-        ids=[j['id'] for j in self.download_queue.snapshot() if j['status']=='失败，可重试']
-        if not ids:self.error_detail.set('没有需要重新下载的失败任务。数据已收齐但校验待确认的文件，可保存现有文件使用。');return
-        self.download_queue.edit(ids,'retry');self.error_detail.set('已重新排队；继续断点，不会从头重复下载。');self.start_queue()
+        self.queue_edit('retry')
 
     def restore(self):
         try:
@@ -226,11 +249,12 @@ class App:
         password=values[1] or dict(parse_qsl(urlsplit(values[0]).query)).get('pwd','')
         self.password.set(password);values=(values[0],password,values[2])
         self.session_password=password;self.queue_cookie=values[2]
-        if self.auth_enabled:
+        if self.auth_enabled and not getattr(self,'login_expired',False):
             try:self.store.save_session(values[2],password);self.login_status.set('登录信息已加密保存；服务端续期时自动更新')
             except (StateError,OSError) as e:
                 self.auth_enabled=False;self.login_status.set('加密保存失败，本次仅在内存使用 Cookie')
         else:self.login_status.set('登录信息仅本次使用，退出后不保存。')
+        if not values[2]:self.login_status.set('尚未登录夸克。')
         return values
     def cookie_callback(self,password):
         def updated(cookie):
@@ -247,6 +271,7 @@ class App:
     def values(self):return (self.link.get().strip(),self.password.get(),self.cookie.get().strip())
     def set_busy(self,value):
         self.busy=value
+        self.queue_login.configure(state='disabled' if value else 'normal')
         for widget in self.entries+[self.scan_button,self.browse]:widget.configure(state='disabled' if value else 'normal')
         self.download_button.configure(state='normal' if self.api and (not value or self.queue_running) else 'disabled')
         self.verify_button.configure(state='normal' if self.api and not value else 'disabled')
@@ -317,14 +342,20 @@ class App:
     def enqueue_selected(self):
         selected=self.selected()
         if selected:self.add_to_queue(self.api,[f for _,f in selected],self.snapshot[0],self.snapshot[1],self.destination.get(),int(self.connections.get()))
-    def start_queue(self):
-        if not self.download_queue or self.closing:return
-        self.queue_autorun=True
-        if self.busy:return
+    def start_queue(self,only_ids=None):
+        if not self.download_queue or self.closing or self.login_active:return
+        if self.busy:
+            if only_ids is None:self.queue_autorun=True
+            return
+        self.queue_autorun=only_ids is None
+        if self.login_expired:
+            self.queue_autorun=False
+            self.login_status.set('登录已过期，请重新登录夸克。')
+            return
         if not self.download_queue.has_pending():self.status.set('队列没有等待任务；失败任务可在队列中选择重试。');return
         with self.download_queue.lock:
             for job in self.download_queue.jobs:
-                if job['status'] in ('等待下载','已暂停'):job['workers']=int(self.connections.get())
+                if job['status'] in ('等待下载','已暂停') and (only_ids is None or job['id'] in only_ids):job['workers']=int(self.connections.get())
         self.queue_cookie=self.cookie.get();self.auth_values();self.queue_running=True
         def action():
             def factory(password):
@@ -334,13 +365,13 @@ class App:
                 return Downloader(api,self.stop,self.on_progress,lambda s:self.q.put(('log',s)),workers=workers)
             def event(typ,job):
                 if typ=='active':self.latest_progress=None;self.speed_reset=True;self.q.put(('log',f'队列开始：{job["file"]["display"]}'))
-                if typ=='failed':self.q.put(('log',f'任务保留，继续后续文件：{job["file"]["display"]}；{job["error"]}'))
+                if typ=='failed':self.q.put(('log',f'任务保留：{job["file"]["display"]}；{job["error"]}'))
                 self.q.put(('queue_job',job))
             try:
-                self.download_queue.run(self.stop,factory,downloader,event)
-                jobs=self.download_queue.snapshot();failures=sum(j['status'] in ('失败，可重试','校验待确认','疑似重复，待选择') for j in jobs)
+                self.download_queue.run(self.stop,factory,downloader,event,only_ids)
+                jobs=self.download_queue.snapshot();failures=sum(j['status'] in ATTENTION for j in jobs)
                 self.q.put(('success','队列已暂停，等待任务和断点已保存。' if self.stop.is_set() else
-                            (f'队列本轮处理结束，{failures} 个任务需要处理；文件和断点已保留。' if failures else '队列文件全部下载并校验完成。')))
+                            (f'队列本轮处理结束，{failures} 个任务需要处理；文件和断点已保留。' if failures else ('本轮所选任务处理完成。' if only_ids is not None else '队列文件全部下载并校验完成。'))))
             finally:self.queue_running=False
         self.start(action)
     def refresh_queue(self):
@@ -348,7 +379,7 @@ class App:
         jobs=self.download_queue.snapshot()
         failures=[j for j in jobs if j['status'] in ATTENTION]
         if failures:
-            failed=failures[-1];self.error_detail.set(f'{len(failures)} 项需要处理 · {failed["file"]["display"][:45]}：{failed["error"][:180]}')
+            failed=failures[-1];self.error_detail.set(f'{len(failures)} 项需要处理。选中任务查看下一步。')
             for i,f in enumerate(self.rows):
                 if str(f['fid'])==str(failed['file']['fid']) and self.tree.exists(str(i)):self.tree.set(str(i),'reason',failed['error'])
         else:self.error_detail.set('')
@@ -360,13 +391,18 @@ class App:
         for key in self.queue_tree.get_children():
             if key not in wanted:self.queue_tree.delete(key)
         for position,(i,j) in enumerate(shown):
-            values=(i,j['file']['display'],size_text(j['file']['size']),progress_text(j),j['status'])
+            values=(i,j['file']['display'],size_text(j['file']['size']),progress_text(j),task_status_text(j))
             tag='attention' if j['status'] in ATTENTION else ('active' if j['status']=='下载中' else ('done' if category(j)=='已完成' else ''))
-            if self.queue_tree.exists(j['id']):self.queue_tree.item(j['id'],values=values,tags=(tag,));self.queue_tree.move(j['id'],'',position)
+            if self.queue_tree.exists(j['id']):
+                self.queue_tree.item(j['id'],values=values,tags=(tag,))
+                if self.queue_tree.index(j['id'])!=position:self.queue_tree.move(j['id'],'',position)
             else:self.queue_tree.insert('','end',iid=j['id'],values=values,tags=(tag,))
         self.empty_hint.set('' if shown else ('没有符合筛选条件的任务。' if jobs else '还没有任务。点击“＋ 添加文件”，也可以按 Ctrl+N。'))
         self.task_info()
-        self.retry_button.configure(state='normal' if any(j['status']=='失败，可重试' for j in jobs) else 'disabled')
+        if self.login_expired:
+            if not self.queue_login.winfo_manager():self.queue_login.pack(side='left',padx=6)
+        elif self.queue_login.winfo_manager():self.queue_login.pack_forget()
+        self.queue_login.configure(state='disabled' if self.busy else 'normal')
         if not self.busy:self.resume_button.configure(state='normal' if pending or (self.rows and not jobs) else 'disabled')
         legacy_pending=not jobs and any('校验' in value for value in self.statuses.values())
         if legacy_pending:self.legacy_export.grid(row=6,column=0,sticky='w',pady=4)
@@ -375,20 +411,51 @@ class App:
     def task_info(self,*_):
         chosen=set(self.queue_tree.selection())
         jobs=[j for j in self.download_queue.snapshot() if j['id'] in chosen] if self.download_queue else []
-        for button in self.context_buttons.values():button.pack_forget()
+        retryable=any(j['status']=='失败，可重试' or (j['status']=='等待登录' and not self.login_expired and self.cookie.get()) for j in jobs)
+        self.retry_button.configure(state='normal' if retryable and not self.busy else 'disabled')
+        self.diagnostic_text.set(jobs[0].get('error','') if jobs else '')
+        self.update_diagnostic()
         if not jobs:
+            self.layout_task_actions([])
             self.task_detail.set('选中任务查看原因、处理建议和保存位置；双击可打开所在文件夹。');return
         job=jobs[0]
         path=job.get('candidate_path') if job['status']=='疑似重复，待选择' else (job.get('path') or job.get('local_target') or job['destination'])
-        reason=(job.get('error','')[:260]+'\n') if job.get('error') else ''
-        self.task_detail.set((f'已选 {len(jobs)} 项 · ' if len(jobs)>1 else '')+job['file']['display']+'\n'+reason+next_step(job)+'\n位置：'+str(path))
+        self.task_detail.set((f'已选 {len(jobs)} 项 · ' if len(jobs)>1 else '')+job['file']['display']+'\n'+('登录已更新，点击“重试所选”继续。' if job['status']=='等待登录' and retryable else next_step(job))+'\n位置：'+str(path))
         available=['打开所在文件夹']
-        if any(j['status']=='失败，可重试' for j in jobs):available.insert(0,'重试所选')
+        if retryable and not self.busy:available.insert(0,'重试所选')
         if any(j['status']!='下载中' for j in jobs):available+=['上移','下移','移除任务']
         if any(j['status']=='校验待确认' for j in jobs):available+=['保存现有文件']
         if any(j['status']=='疑似重复，待选择' for j in jobs):available+=['使用已有文件','仍然下载']
-        for name in available:self.context_buttons[name].pack(side='left',padx=(0,6))
+        self.layout_task_actions(available)
         self.context_buttons['保存现有文件'].configure(state='disabled' if self.busy else 'normal')
+
+    def toggle_diagnostic(self):
+        self.diagnostic_open=not self.diagnostic_open
+        self.update_diagnostic()
+
+    def update_diagnostic(self):
+        has_error=bool(self.diagnostic_text.get())
+        for widget,visible in ((self.diagnostic_button,has_error),
+                               (self.diagnostic_label,has_error and self.diagnostic_open)):
+            if visible and not widget.winfo_manager():
+                widget.pack(anchor='w',before=self.task_actions)
+            elif not visible and widget.winfo_manager():widget.pack_forget()
+
+    def layout_task_actions(self,available):
+        current=getattr(self,'visible_task_actions',())
+        desired=tuple(available)
+        if current==desired:return
+        for name in current:
+            if name not in desired:self.context_buttons[name].pack_forget()
+        next_button=None
+        for name in reversed(desired):
+            button=self.context_buttons[name]
+            packed=self.task_actions.pack_slaves()
+            if button not in packed:
+                position={'before':next_button} if next_button else {}
+                button.pack(side='left',padx=(0,6),**position)
+            next_button=button
+        self.visible_task_actions=desired
 
     def show_queue(self):self.notebook.select(self.task_page)
     def open_task_folder(self):
@@ -403,10 +470,11 @@ class App:
         if self.queue_tree:
             ids=list(self.queue_tree.selection())
             if action=='retry':
-                ids=[j['id'] for j in self.download_queue.snapshot() if j['id'] in ids and j['status']=='失败，可重试']
+                if self.busy:return
+                ids=[j['id'] for j in self.download_queue.snapshot() if j['id'] in ids and (j['status']=='失败，可重试' or (j['status']=='等待登录' and not self.login_expired and self.cookie.get()))]
                 if not ids:messagebox.showinfo('无需重新下载','只对下载失败的任务重试。校验待确认的文件已接收完整，可保存现有文件；疑似重复的文件请先选择是否使用已有文件。');return
             self.download_queue.edit(ids,action);self.refresh_queue()
-            if action=='retry':self.start_queue()
+            if action=='retry':self.start_queue(set(ids))
     def resolve_duplicates(self,use_existing):
         chosen=set(self.queue_tree.selection())
         with self.download_queue.lock:
@@ -433,76 +501,11 @@ class App:
         self.start(action)
     def add_share_dialog(self):
         if self.closing:return
-        if not self.download_queue:messagebox.showerror('队列不可用','队列文件无法读取，请检查本地数据目录。');return
-        window=tk.Toplevel(self.root);window.title('添加文件 · 当前下载继续运行');window.geometry('820x620');window.minsize(740,540)
-        self.dialogs.add(window)
-        def dismiss():
-            self.dialogs.discard(window);window.destroy()
-        window.protocol('WM_DELETE_WINDOW',dismiss)
-        outer=ttk.Frame(window,padding=12);outer.pack(fill='both',expand=True);outer.columnconfigure(1,weight=1)
-        link=tk.StringVar();password=tk.StringVar();dest=tk.StringVar(value=self.destination.get())
-        auto=tk.BooleanVar(value=True);hint=tk.StringVar(value='解析新分享不会中断当前下载。解析后可多选文件加入队列。')
-        controls=[]
-        for i,(label,var) in enumerate([('链接 / 分享文案',link),('提取码（自动识别）',password),('下载目录',dest)]):
-            ttk.Label(outer,text=label).grid(row=i,column=0,sticky='w',pady=5)
-            entry=ttk.Entry(outer,textvariable=var);entry.grid(row=i,column=1,sticky='ew',pady=5);controls.append(entry)
-        tree=ttk.Treeview(outer,columns=('name','size'),show='headings',selectmode='extended',height=14)
-        tree.heading('name',text='文件 / 原目录');tree.column('name',width=570);tree.heading('size',text='大小');tree.column('size',width=110)
-        tree.grid(row=5,column=0,columnspan=3,sticky='nsew',pady=8);outer.rowconfigure(5,weight=1)
-        scroll=ttk.Scrollbar(outer,command=tree.yview);scroll.grid(row=5,column=3,sticky='ns',pady=8);tree.configure(yscrollcommand=scroll.set)
-        ttk.Label(outer,textvariable=hint,wraplength=700).grid(row=6,column=0,columnspan=4,sticky='w')
-        ttk.Checkbutton(outer,text='加入后自动下载（当前文件结束后接着下载）',variable=auto).grid(row=7,column=0,columnspan=4,sticky='w',pady=6)
-        state={};bar=ttk.Frame(outer);bar.grid(row=4,column=0,columnspan=4,sticky='w',pady=8)
-        def paste():
-            try:
-                url,pwd=share_input(window.clipboard_get());link.set(url);password.set(pwd);hint.set('已识别分享链接和提取码，请点“解析分享”。')
-            except tk.TclError:hint.set('剪贴板中没有文本。')
-            except ValueError as e:hint.set(str(e))
-        paste_button=ttk.Button(outer,text='粘贴',command=paste);paste_button.grid(row=0,column=2,padx=(6,0))
-        def choose_dest():
-            value=filedialog.askdirectory(parent=window,initialdir=dest.get() if Path(dest.get()).is_dir() else None)
-            if value:dest.set(value)
-        pick=ttk.Button(outer,text='选择目录',command=choose_dest);pick.grid(row=2,column=2,padx=(6,0));controls.extend([paste_button,pick])
-        def finish(api,rows,values,error=None):
-            if not window.winfo_exists():return
-            for widget in controls+[scan]:widget.configure(state='normal')
-            if error:hint.set(error);return
-            state.update(api=api,rows=rows,values=values);tree.delete(*tree.get_children())
-            for i,f in enumerate(rows):tree.insert('','end',iid=str(i),values=(f['display'],f'{int(f["size"])/1024**3:.3f} GiB'))
-            tree.selection_set(tree.get_children());hint.set(f'已解析 {len(rows)} 个文件，默认全选；按 Ctrl / Shift 调整选择。');add.configure(state='normal')
-        def scan_share():
-            try:url,pwd=share_input(link.get(),password.get())
-            except (ValueError,ProbeError) as e:hint.set(str(e));return
-            link.set(url);password.set(pwd);values=(url,pwd,dest.get().strip())
-            if not values[0] or not values[2]:hint.set('请填写分享链接和下载目录。');return
-            pwd=values[1] or dict(parse_qsl(urlsplit(values[0]).query)).get('pwd','');password.set(pwd);values=(values[0],pwd,values[2])
-            cookie=self.queue_cookie if self.busy else self.cookie.get();state.clear();add.configure(state='disabled')
-            gc.collect()
-            for widget in controls+[scan]:widget.configure(state='disabled')
-            hint.set('正在解析；当前下载继续运行…')
-            def worker():
-                try:
-                    api=Probe(cookie,lambda s:None,self.cookie_callback(pwd));rows=api.scan(values[0],pwd)
-                    self.q.put(('incoming',(finish,(api,rows,values))))
-                except Exception as e:
-                    error=str(e) if isinstance(e,ProbeError) else f'解析未完成（{type(e).__name__}），请重试。'
-                    self.q.put(('incoming',(finish,(None,None,values,error))))
-            thread=threading.Thread(target=worker,daemon=True);self.dialog_threads.append(thread);thread.start()
-        def add_files():
-            if (link.get().strip(),password.get(),dest.get().strip())!=state.get('values'):
-                hint.set('链接、提取码或目录已改变，请重新解析。');return
-            selected=[state['rows'][int(i)] for i in tree.selection()]
-            if not selected:hint.set('请至少选择一个文件。');return
-            values=state['values']
-            if not self.add_to_queue(state['api'],selected,values[0],values[1],values[2],int(self.connections.get())):
-                hint.set('队列保存失败，尚未加入。请检查工具目录权限和磁盘空间，然后重试。');return
-            if auto.get():self.start_queue()
-            dismiss()
-        scan=ttk.Button(bar,text='解析分享',command=scan_share);scan.pack(side='left')
-        add=ttk.Button(bar,text='所选文件加入队列',command=add_files,state='disabled');add.pack(side='left',padx=8)
-        ttk.Button(bar,text='全选',command=lambda:tree.selection_set(tree.get_children())).pack(side='left')
-        controls[0].focus_set()
-        return window
+        if not self.download_queue:
+            messagebox.showerror('队列不可用','队列文件无法读取，请检查本地数据目录。')
+            return
+        return open_share_dialog(self)
+
     def resume(self,repair=False):
         if self.busy:return
         if not repair and self.download_queue and self.download_queue.snapshot():self.start_queue();return
@@ -571,19 +574,23 @@ class App:
             elif typ=='incoming':data[0](*data[1])
             elif typ=='queue_changed':self.refresh_queue()
             elif typ=='queue_job':
+                if data['status'] in ATTENTION:
+                    self.latest_progress=None
+                    self.status.set(next_step(data))
+                    self.eta.set('预计完成：等待处理')
+                    self.root.title('夸克下载 · QuarkBridge')
+                if data['status']=='等待登录':
+                    self.login_expired=True;self.queue_autorun=False
+                    self.login_status.set('登录已过期，请重新登录夸克。')
                 if data['status']=='下载中':self.root.title('下载中 · '+data['file']['display'][:48]+' · QuarkBridge 0.12.0-rc.1')
-                sid=self.api.sid if self.api else parse(self.link.get())[0]
+                try:sid=self.api.sid if self.api else parse(self.link.get())[0]
+                except ProbeError:sid=None
                 if data['sid']==sid:
                     for i,f in enumerate(self.rows):
                         if str(f['fid'])==str(data['file']['fid']):
                             self.statuses[str(f['fid'])]=data['status']
                             if self.tree.exists(str(i)):self.tree.set(str(i),'state',data['status'])
                             if self.tree.exists(str(i)):self.tree.set(str(i),'reason',data.get('error',''))
-                if data.get('error'):
-                    next_step='点击“重试失败任务”继续。' if data['status']=='失败，可重试' else ('数据已接收完整，可保存现有文件使用。' if data['status']=='校验待确认' else '在任务列表选择使用已有文件或仍然下载。')
-                    self.error_detail.set(f'{data["file"]["display"]}：{data["error"]} {next_step}')
-                elif data['status'].startswith(('已完成','已存在','已保存','已跳过')) and not any(j['status'] in ('失败，可重试','校验待确认','疑似重复，待选择') for j in self.download_queue.snapshot()):
-                    self.error_detail.set('')
                 if data.get('path'):self.last_path=data['path']
                 self.refresh_queue();self.save_history()
             elif typ=='log':self.log_message(data)

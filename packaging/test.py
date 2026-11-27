@@ -10,5 +10,6 @@ def flatten(suite):
         else:yield item
 suite=unittest.defaultTestLoader.discover(platform,pattern='test_*.py')
 if platform=='macos':suite=unittest.TestSuite(t for t in flatten(suite) if 'gui' not in t.id().lower())
+suite.addTests(unittest.defaultTestLoader.discover('shared',pattern='test_*.py'))
 result=unittest.TextTestRunner(verbosity=1).run(suite)
 sys.exit(0 if result.wasSuccessful() else 1)

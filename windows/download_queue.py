@@ -6,7 +6,7 @@ import threading
 import time
 from urllib.parse import urlsplit,urlunsplit,parse_qsl,urlencode
 from direct_download import output_path,Paused,ChecksumMismatch,export_unverified
-from verify_direct import ProbeError
+from verify_direct import ProbeError,LoginExpired
 from safe_diagnostics import failure_detail
 from download_catalog import PotentialDuplicate
 from pathlib import Path
@@ -98,18 +98,26 @@ class DownloadQueue:
                         other=self.jobs[n]
                         if other['id'] not in wanted and other['status']!='下载中':self.jobs[i],self.jobs[n]=other,self.jobs[i]
             self.save()
+    def mark_login_ready(self):
+        with self.lock:
+            waiting=[j for j in self.jobs if j['status']=='等待登录']
+            if not waiting:return
+            for job in waiting:
+                job.update(status='失败，可重试',phase='',error='登录已更新，可重试所选任务。')
+            self.save()
+
     def has_pending(self):
         with self.lock:return any(j['status'] in ('等待下载','已暂停') for j in self.jobs)
-    def run(self,stop,api_factory,downloader_factory,event):
+    def run(self,stop,api_factory,downloader_factory,event,only_ids=None):
         with self.lock:
             if self.running:return
             self.running=True
         try:
             while not stop.is_set():
                 with self.lock:
-                    job=next((j for j in self.jobs if j['status'] in ('等待下载','已暂停')),None)
+                    job=next((j for j in self.jobs if j['status'] in ('等待下载','已暂停') and (only_ids is None or j['id'] in only_ids)),None)
                     if job is None:break
-                    job.update(status='下载中',error='',phase='准备下载');self.active_id=job['id'];self.last_progress_save=0
+                    job.update(status='下载中',error='',phase='获取下载地址');self.active_id=job['id'];self.last_progress_save=0
                     self.save();cached=self.live.get(job['id'])
                     password=self.passwords.get(job['id'],'')
                 event('active',copy.deepcopy(job))
@@ -147,11 +155,13 @@ class DownloadQueue:
                     with self.lock:
                         self.checkpoint_bytes(job,dl)
                         job.update(status='疑似重复，待选择' if isinstance(e,PotentialDuplicate) else ('校验待确认' if isinstance(e,ChecksumMismatch) else '失败，可重试'),error=text)
+                        if isinstance(e,LoginExpired):job.update(status='等待登录',phase='等待登录')
                         if isinstance(e,PotentialDuplicate):job['candidate_path']=e.path
                         self.save()
                         # Reparse on authentication / link errors, keeping ordinary network retries cheap.
-                        if any(code in text for code in ('HTTP 401','HTTP 403','code=23018')):self.live.pop(job['id'],None)
+                        if isinstance(e,LoginExpired) or any(code in text for code in ('HTTP 401','HTTP 403','code=23018')):self.live.pop(job['id'],None)
                     event('failed',copy.deepcopy(job))
+                    if isinstance(e,LoginExpired):break
                 finally:event('finished',copy.deepcopy(job))
         finally:
             with self.lock:self.running=False;self.active_id=None

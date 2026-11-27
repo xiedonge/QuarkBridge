@@ -4,11 +4,11 @@ from urllib.parse import urlsplit, parse_qsl
 from verify_direct import parse
 
 FILTERS=('全部','下载中','等待 / 暂停','需要处理','已完成')
-ATTENTION=('失败，可重试','校验待确认','疑似重复，待选择')
+ATTENTION=('等待登录','失败，可重试','校验待确认','疑似重复，待选择')
 
 def share_input(text, password=''):
     """Accept a URL or one ordinary Quark share message; reject ambiguous input."""
-    links=re.findall(r'https://pan\.quark\.cn/s/[A-Za-z0-9]+(?:[?#][^\s<>\]）)，。；\"\u201d]*)?',text)
+    links=re.findall(r'https://(?:pan|drive)\.quark\.cn/s/[A-Za-z0-9_-]+/?(?:[?#][^\s<>\]）)，。；\"\u201d]*)?',text)
     links=list(dict.fromkeys(link.rstrip('.,;)') for link in links))
     if len(links)!=1:
         raise ValueError('请粘贴一个夸克分享链接或整段分享文案；多个分享请分别添加。')
@@ -40,12 +40,21 @@ def progress_text(job):
     if job['status']=='校验待确认':return '已收齐'
     return f'{100*done/max(total,1):.1f}% · {size_text(done)}'
 
+def task_status_text(job):
+    if job['status']!='下载中':return job['status']
+    phase=job.get('phase','')
+    if phase.startswith('下载中'):return '正在接收'
+    if '校验' in phase:return '正在校验'
+    if '检查本地' in phase:return '检查本地文件'
+    return '获取下载地址'
+
 def next_step(job):
     status=job['status'];error=job.get('error','')
     if status=='校验待确认':return '数据已收齐。点“保存现有文件”，无需重新下载；文件将标记为校验待确认。'
     if status=='疑似重复，待选择':return '发现可能相同的本地文件。选择“使用已有文件”或“仍然下载”。'
+    if status=='等待登录':return '重新登录夸克后，点击“重试所选”继续。'
     if status=='失败，可重试':
-        if '401' in error or '登录' in error or 'Cookie' in error:return '检查分享是否有效；到“设置”更新登录，再点“重试所选”。'
+        if '23018' in error or 'HTTP 403' in error:return '请在夸克官方客户端确认这个文件可以下载，再重试所选任务。'
         if '429' in error or '503' in error:return '稍后重试；可先暂停，在“设置”将连接数降低到 1 或 2。'
         if '空间' in error:return '在此任务的下载磁盘腾出空间，再点“重试所选”。'
         if '权限' in error or '写入被拒绝' in error:return '检查此任务的目录权限或文件占用，再点“重试所选”。'
