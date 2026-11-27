@@ -52,7 +52,7 @@ def run(smoke=False):
             timer.stop()
             connection.close()
             event.accept()
-    window = Window();window.setWindowTitle('登录夸克 · QuarkBridge 0.12.0-rc.1');window.setMinimumSize(320,260)
+    window = Window();window.setWindowTitle('登录夸克 · QuarkBridge 0.12.0');window.setMinimumSize(320,260)
     screen=app.screenAt(QCursor.pos()) or app.primaryScreen()
     area=screen.availableGeometry()
     saved=settings.value('size',QSize(),type=QSize) if not smoke else QSize()

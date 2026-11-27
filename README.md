@@ -35,7 +35,7 @@ Windows 便携版任务保存在程序目录 `data`；Mac 保存在 `~/Library/A
 
 协议实现参考 [PowerList 夸克分享驱动](https://github.com/power721/PowerList/tree/main/drivers/quark_uc_share)。交互设计参考 Gopeed、Motrix 和 aria2；此次发布没有将它们的下载器作为运行依赖。
 
-## 内置登录测试版（v0.12.0-rc.1）
+## 内置登录测试版（v0.12.0）
 
 从对应测试 Release 下载完整 Windows 或 Apple Silicon 包。软件内置 Qt WebEngine，不需要安装 Python、浏览器驱动或 WebView2。
 

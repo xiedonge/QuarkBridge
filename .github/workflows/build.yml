@@ -1,6 +1,11 @@
 name: Build standalone applications
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish v0.12.0 after all native builds pass
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -42,7 +47,7 @@ jobs:
           name: verification-${{ matrix.label }}
           path: frozen-smoke.json
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: inputs.publish_release
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -60,4 +65,7 @@ jobs:
         run: |
           cd release
           sha256sum *.zip > SHA256SUMS.txt
-          gh release create v0.11.0 *.zip SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "QuarkBridge 0.11.0 — 自带运行环境" --notes-file ../RELEASE_NOTES.md
+          test -f QuarkBridge-macOS-arm64.zip
+          test -f QuarkBridge-macOS-x64.zip
+          test -f QuarkBridge-Windows-x64.zip
+          gh release create v0.12.0 *.zip SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest --title "QuarkBridge 0.12.0" --notes-file ../RELEASE_NOTES.md
